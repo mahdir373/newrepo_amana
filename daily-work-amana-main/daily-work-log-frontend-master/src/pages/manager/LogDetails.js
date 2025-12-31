@@ -167,7 +167,7 @@ const LogDetails = () => {
   <Card.Body>
     <Row>
       {log.workPhotos.map((photoPath, index) => {
-        const fullUrl = `http://localhost:5000/${photoPath}`;
+        const fullUrl = `https://amana-backend-417811099802.me-west1.run.app/${photoPath}`;
         return (
           <Col md={3} key={index} className="mb-3"> {/* 🔹 אפשר גם md=3 כדי להקטין */}
             <div
@@ -207,7 +207,7 @@ const LogDetails = () => {
         {/* אם זה PDF או מסמך */}
         {log.deliveryCertificate.endsWith('.pdf') ? (
           <a
-            href={`http://localhost:5000/${log.deliveryCertificate}`}
+            href={`https://amana-backend-417811099802.me-west1.run.app/${log.deliveryCertificate}`}
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-outline-primary"
@@ -217,12 +217,12 @@ const LogDetails = () => {
         ) : (
           // אם זה תמונה → מוצגת קטנה (thumbnail)
           <a
-            href={`http://localhost:5000/${log.deliveryCertificate}`}
+            href={`https://amana-backend-417811099802.me-west1.run.app/${log.deliveryCertificate}`}
             target="_blank"
             rel="noopener noreferrer"
           >
             <img
-              src={`http://localhost:5000/${log.deliveryCertificate}`}
+              src={`https://amana-backend-417811099802.me-west1.run.app/${log.deliveryCertificate}`}
               alt="תעודת משלוח"
               className="img-thumbnail"
               style={{

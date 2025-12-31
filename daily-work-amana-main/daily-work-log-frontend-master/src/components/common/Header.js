@@ -57,7 +57,7 @@ const Header = () => {
       <Container>
         <Navbar.Brand as={Link} to="/">
           <img
-            src="/amana.png"
+            src="/amana1.png"
             alt="לוגו החברה"
             height="65"
             className="d-inline-block align-top"

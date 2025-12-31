@@ -17,6 +17,7 @@ const ViewDailyLog = () => {
 
   useEffect(() => {
     fetchLog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   const fetchLog = async () => {
@@ -41,12 +42,30 @@ const ViewDailyLog = () => {
   };
 
   const getStatusBadge = () => {
-  return <Badge bg="primary">נשלח</Badge>;
-};
+    return <Badge bg="primary">נשלח</Badge>;
+  };
 
+  // ⚙️ פונקציה שעוזרת לבנות URL לקובץ
+  // אם זה כבר לינק מלא (https://storage.googleapis.com/...) – מחזירה כמו שהוא
+  // אם זה נתיב יחסי ישן (/uploads/...) – מחברת אותו ל-REACT_APP_API_URL
+  const resolveFileUrl = (filePath) => {
+    if (!filePath) return '';
+
+    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
+      return filePath;
+    }
+
+    const baseUrl = (process.env.REACT_APP_API_URL || '').replace(/\/$/, '');
+    const cleanedPath = filePath.replace(/^\/+/, '');
+    return `${baseUrl}/${cleanedPath}`;
+  };
 
   if (loading) {
-    return <Container dir="rtl"><p className="text-center">טוען את פרטי הדו"ח...</p></Container>;
+    return (
+      <Container dir="rtl">
+        <p className="text-center">טוען את פרטי הדו"ח...</p>
+      </Container>
+    );
   }
 
   if (error) {
@@ -71,6 +90,10 @@ const ViewDailyLog = () => {
     );
   }
 
+  // 🔎 מוצאים תעודת משלוח מתוך documents (GCS) אם קיימת
+  const deliveryNoteFromDocuments =
+    log.documents?.find((doc) => doc.type === 'delivery_note') || null;
+
   return (
     <Container dir="rtl">
       {/* כפתורי ניווט עליונים */}
@@ -92,16 +115,28 @@ const ViewDailyLog = () => {
 
       {/* מידע כללי */}
       <Card className="mb-4">
-        <Card.Header><h5 className="mb-0">מידע כללי</h5></Card.Header>
+        <Card.Header>
+          <h5 className="mb-0">מידע כללי</h5>
+        </Card.Header>
         <Card.Body>
           <Row>
             <Col md={6}>
-              <p><strong>תאריך:</strong> {moment(log.date).format('DD/MM/YYYY')}</p>
-              <p><strong>פרויקט:</strong> {log.project?.name || log.project}</p>
+              <p>
+                <strong>תאריך:</strong> {moment(log.date).format('DD/MM/YYYY')}
+              </p>
+              <p>
+                <strong>פרויקט:</strong> {log.project?.name || log.project}
+              </p>
             </Col>
             <Col md={6}>
-              <p><strong>ראש צוות:</strong> {log.teamLeader?.fullName || '-'}</p>
-              <p><strong>שעות עבודה:</strong> {moment(log.startTime).format('HH:mm')} - {moment(log.endTime).format('HH:mm')}</p>
+              <p>
+                <strong>ראש צוות:</strong> {log.teamLeader?.fullName || '-'}
+              </p>
+              <p>
+                <strong>שעות עבודה:</strong>{' '}
+                {moment(log.startTime).format('HH:mm')} -{' '}
+                {moment(log.endTime).format('HH:mm')}
+              </p>
             </Col>
           </Row>
         </Card.Body>
@@ -109,7 +144,9 @@ const ViewDailyLog = () => {
 
       {/* עובדים נוכחים */}
       <Card className="mb-4">
-        <Card.Header><h5 className="mb-0">עובדים נוכחים</h5></Card.Header>
+        <Card.Header>
+          <h5 className="mb-0">עובדים נוכחים</h5>
+        </Card.Header>
         <Card.Body>
           {log.employees?.length > 0 ? (
             <ul className="list-unstyled">
@@ -125,84 +162,137 @@ const ViewDailyLog = () => {
 
       {/* תיאור עבודה */}
       <Card className="mb-4">
-        <Card.Header><h5 className="mb-0">תיאור עבודה</h5></Card.Header>
+        <Card.Header>
+          <h5 className="mb-0">תיאור עבודה</h5>
+        </Card.Header>
         <Card.Body>
           <p>{log.workDescription || 'לא צויין תיאור עבודה'}</p>
         </Card.Body>
       </Card>
 
       {/* תמונות מהשטח */}
-<Card className="mb-4">
-  <Card.Header><h5 className="mb-0">תמונות מהשטח</h5></Card.Header>
-  <Card.Body>
-    <Row>
-      {log.workPhotos?.length > 0 ? (
-        log.workPhotos.map((photoPath, i) => {
-          const fullUrl = `http://localhost:5000/${photoPath}`;
-          return (
-            <Col xs={6} sm={4} md={3} lg={2} key={i} className="mb-3">
-              <a href={fullUrl} target="_blank" rel="noopener noreferrer">
-                <img
-                  src={fullUrl}
-                  alt={`תמונה ${i + 1}`}
-                  className="img-fluid rounded"
-                  style={{
-                    width: '100%',
-                    height: '150px', // 🔹 גובה קבוע קטן יותר
-                    objectFit: 'cover',
-                  }}
-                />
-              </a>
-            </Col>
-          );
-        })
-      ) : (
-        <p className="text-muted">לא הועלו תמונות</p>
+      <Card className="mb-4">
+        <Card.Header>
+          <h5 className="mb-0">תמונות מהשטח</h5>
+        </Card.Header>
+        <Card.Body>
+          <Row>
+            {/* 🔹 קודם משתמשים במבנה החדש: log.photos (GCS) */}
+            {log.photos && log.photos.length > 0 ? (
+              log.photos.map((photo, i) => {
+                const url = resolveFileUrl(photo.path);
+                return (
+                  <Col
+                    xs={6}
+                    sm={4}
+                    md={3}
+                    lg={2}
+                    key={photo._id || i}
+                    className="mb-3"
+                  >
+                    <a href={url} target="_blank" rel="noopener noreferrer">
+                      <img
+                        src={url}
+                        alt={photo.originalName || `תמונה ${i + 1}`}
+                        className="img-fluid rounded"
+                        style={{
+                          width: '100%',
+                          height: '150px',
+                          objectFit: 'cover',
+                        }}
+                      />
+                    </a>
+                  </Col>
+                );
+              })
+            ) : log.workPhotos && log.workPhotos.length > 0 ? (
+              // 🔙 תמיכה בלוגים ישנים: workPhotos = מערך של נתיבים
+              log.workPhotos.map((photoPath, i) => {
+                const url = resolveFileUrl(photoPath);
+                return (
+                  <Col
+                    xs={6}
+                    sm={4}
+                    md={3}
+                    lg={2}
+                    key={i}
+                    className="mb-3"
+                  >
+                    <a href={url} target="_blank" rel="noopener noreferrer">
+                      <img
+                        src={url}
+                        alt={`תמונה ${i + 1}`}
+                        className="img-fluid rounded"
+                        style={{
+                          width: '100%',
+                          height: '150px',
+                          objectFit: 'cover',
+                        }}
+                      />
+                    </a>
+                  </Col>
+                );
+              })
+            ) : (
+              <p className="text-muted">לא הועלו תמונות</p>
+            )}
+          </Row>
+        </Card.Body>
+      </Card>
+
+      {/* תעודת משלוח */}
+      {(deliveryNoteFromDocuments || log.deliveryCertificate) && (
+        <Card className="mb-4">
+          <Card.Header>
+            <h5 className="mb-0">תעודת משלוח</h5>
+          </Card.Header>
+          <Card.Body>
+            <Row>
+              <Col xs={6} sm={4} md={3} lg={2} className="mb-3">
+                {(() => {
+                  const filePath =
+                    deliveryNoteFromDocuments?.path || log.deliveryCertificate;
+                  const url = resolveFileUrl(filePath);
+
+                  return (
+                    <a href={url} target="_blank" rel="noopener noreferrer">
+                      <img
+                        src={url}
+                        alt="תעודת משלוח"
+                        className="img-fluid rounded"
+                        style={{
+                          width: '100%',
+                          height: '150px',
+                          objectFit: 'cover',
+                        }}
+                        onError={(e) => {
+                          e.target.onerror = null;
+                          e.target.src = '/fallback-image.png';
+                        }}
+                      />
+                    </a>
+                  );
+                })()}
+              </Col>
+            </Row>
+          </Card.Body>
+        </Card>
       )}
-    </Row>
-  </Card.Body>
-</Card>
-
-{/* תעודת משלוח */}
-{log.deliveryCertificate && (
-  <Card className="mb-4">
-    <Card.Header><h5 className="mb-0">תעודת משלוח</h5></Card.Header>
-    <Card.Body>
-      <Row>
-        <Col xs={6} sm={4} md={3} lg={2} className="mb-3">
-          <a
-            href={`http://localhost:5000/${log.deliveryCertificate}`}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <img
-              src={`http://localhost:5000/${log.deliveryCertificate}`}
-              alt="תעודת משלוח"
-              className="img-fluid rounded"
-              style={{
-                width: '100%',
-                height: '150px', // 🔹 אותו גובה קטן
-                objectFit: 'cover',
-              }}
-              onError={(e) => {
-                e.target.onerror = null;
-                e.target.src = '/fallback-image.png';
-              }}
-            />
-          </a>
-        </Col>
-      </Row>
-    </Card.Body>
-  </Card>
-)}
-
 
       {/* היסטוריית הדוח */}
       <Card className="mb-4">
-        <Card.Header><h5 className="mb-0">היסטוריית הדוח</h5></Card.Header>
+        <Card.Header>
+          <h5 className="mb-0">היסטוריית הדוח</h5>
+        </Card.Header>
         <Card.Body>
-          <p><strong>נוצר:</strong> {moment(log.createdAt).format('DD/MM/YYYY HH:mm')}</p>
-          <p><strong>עודכן לאחרונה:</strong> {moment(log.updatedAt).format('DD/MM/YYYY HH:mm')}</p>
+          <p>
+            <strong>נוצר:</strong>{' '}
+            {moment(log.createdAt).format('DD/MM/YYYY HH:mm')}
+          </p>
+          <p>
+            <strong>עודכן לאחרונה:</strong>{' '}
+            {moment(log.updatedAt).format('DD/MM/YYYY HH:mm')}
+          </p>
         </Card.Body>
       </Card>
     </Container>

@@ -1,47 +1,7 @@
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 
-// Configure storage for photos
-const photoStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, 'uploads/photos');
-
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    // Generate unique filename: logId-timestamp-originalname
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
-    const fileExt = path.extname(file.originalname);
-    cb(null, `${req.params.logId}-${uniqueSuffix}${fileExt}`);
-  }
-});
-
-// Configure storage for documents
-const documentStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../../uploads/photos');
-
-    
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    // Generate unique filename: logId-timestamp-originalname
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
-    const fileExt = path.extname(file.originalname);
-    cb(null, `${req.params.logId}-${uniqueSuffix}${fileExt}`);
-  }
-});
+// ⚙️ Storage בזיכרון – לא שומרים לדיסק בכלל
+const memoryStorage = multer.memoryStorage();
 
 // File filter for photos
 const photoFilter = (req, file, cb) => {
@@ -74,50 +34,27 @@ const documentFilter = (req, file, cb) => {
   }
 };
 
-// Configure multer for photos
+// 📸 multer להגדרת העלאת תמונות (לוג יומי)
 const uploadPhotos = multer({
-  storage: photoStorage,
+  storage: memoryStorage,      // ⬅️ במקום diskStorage
   fileFilter: photoFilter,
   limits: {
     fileSize: 5 * 1024 * 1024 // 5MB limit
   }
 });
 
-// Configure multer for documents
+// 📄 multer להגדרת העלאת מסמכים (לוג יומי)
 const uploadDocuments = multer({
-  storage: documentStorage,
+  storage: memoryStorage,      // ⬅️ במקום diskStorage
   fileFilter: documentFilter,
   limits: {
     fileSize: 10 * 1024 * 1024 // 10MB limit
   }
 });
 
-module.exports = {
-  uploadPhotos,
-  uploadDocuments
-};
+// 🧩 העלאה משולבת (deliveryCertificate + workPhotos) – למשל ל־CreateDailyLog אחר
 const combinedUpload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => {
-      let subfolder = 'others';
-      if (file.fieldname === 'workPhotos') {
-        subfolder = 'photos';
-      } else if (file.fieldname === 'deliveryCertificate') {
-        subfolder = 'documents';
-      }
-
-      const uploadDir = path.join(__dirname, `../uploads/${subfolder}`);
-      if (!fs.existsSync(uploadDir)) {
-        fs.mkdirSync(uploadDir, { recursive: true });
-      }
-      cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-      const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
-      const fileExt = path.extname(file.originalname);
-      cb(null, `${uniqueSuffix}${fileExt}`);
-    }
-  }),
+  storage: memoryStorage,      // ⬅️ גם כאן רק בזיכרון
   fileFilter: (req, file, cb) => {
     if (file.fieldname === 'workPhotos') {
       return photoFilter(req, file, cb);
@@ -131,12 +68,13 @@ const combinedUpload = multer({
   }
 });
 
-// 📌 השורה החשובה – שילוב השדות!
+// 📌 שדות מרובים בטופס אחד
 const uploadFields = combinedUpload.fields([
   { name: 'deliveryCertificate', maxCount: 1 },
   { name: 'workPhotos', maxCount: 10 }  // או כמה שאתה רוצה
 ]);
 
+// ✅ ייצוא יחיד ומסודר
 module.exports = {
   uploadPhotos,
   uploadDocuments,

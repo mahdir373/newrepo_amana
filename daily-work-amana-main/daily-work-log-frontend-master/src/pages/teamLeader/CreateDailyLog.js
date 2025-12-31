@@ -4,20 +4,18 @@ import { useNavigate } from 'react-router-dom';
 import { Formik } from 'formik';
 import * as Yup from 'yup';
 import { logService } from '../../services/apiService';
+import { fileService } from '../../services/apiService'; // ⬅️ חדש
 import { toast } from 'react-toastify';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
-/** ---------- פורמט חדש: Select אחד ל-HH:MM ברבעי שעה + Select לשניות ---------- */
+/** ---------- פורמט חדש: Select אחד ל-HH:MM ברבעי שעה ---------- */
 const QuarterHourSelectTimePicker = ({ label, value, onChange }) => {
-  // value הוא Date
   const h = value ? value.getHours() : 0;
   const m = value ? value.getMinutes() : 0;
-  const s = value ? value.getSeconds() : 0;
 
-  // מייצר אפשרויות HH:MM ב-15 דק
   const hhmmOptions = [];
   for (let hour = 0; hour < 24; hour++) {
     [0, 15, 30, 45].forEach((min) => {
@@ -25,24 +23,14 @@ const QuarterHourSelectTimePicker = ({ label, value, onChange }) => {
     });
   }
 
-  const seconds = Array.from({ length: 60 }, (_, i) => i);
-
   const handleHHMMChange = (e) => {
     const [HH, MM] = e.target.value.split(':').map(Number);
     const next = value ? new Date(value) : new Date();
-    next.setHours(HH, MM, s, 0);
+    next.setHours(HH, MM, 0, 0);
     onChange(next);
   };
 
-  const handleSecChange = (e) => {
-    const sec = Number(e.target.value);
-    const next = value ? new Date(value) : new Date();
-    next.setSeconds(sec);
-    next.setMilliseconds(0);
-    onChange(next);
-  };
-
-  const currentHHMM = `${pad2(h)}:${pad2(m - (m % 15))}`; // מעגל ל-רבע שעה הקרוב מטה להצגה
+  const currentHHMM = `${pad2(h)}:${pad2(m - (m % 15))}`;
 
   return (
     <Form.Group className="mb-3">
@@ -56,18 +44,8 @@ const QuarterHourSelectTimePicker = ({ label, value, onChange }) => {
               </option>
             ))}
           </Form.Select>
-          {/* <div className="form-text">בחירה בקפיצות של רבע שעה</div> */}
         </Col>
-        <Col xs={4}>
-          {/* <Form.Select value={s} onChange={handleSecChange}>
-            {seconds.map((sec) => (
-              <option key={sec} value={sec}>
-                {pad2(sec)} שניות
-              </option>
-            ))}
-          </Form.Select>
-          <div className="form-text">שניות</div> */}
-        </Col>
+        <Col xs={4}>{/* שמרתי מקום אם תרצה להחזיר שניות בעתיד */}</Col>
       </Row>
     </Form.Group>
   );
@@ -106,33 +84,48 @@ const CreateDailyLog = () => {
 
   const handleSubmit = async (values, { setSubmitting }) => {
     try {
+      setError('');
+
       const { deliveryCertificate, workPhotos, ...restValues } = values;
 
-      const formattedValues = {
+      // 🔹 שלב 1: יצירת הדוח בלי קבצים (JSON רגיל)
+      const payload = {
         ...restValues,
         date: new Date(values.date).toISOString(),
         startTime: new Date(values.startTime).toISOString(),
         endTime: new Date(values.endTime).toISOString()
+        // employees כבר מערך רגיל של מחרוזות
       };
 
-      const formData = new FormData();
-      Object.keys(formattedValues).forEach(key => {
-        if (key === 'employees') {
-          formData.append(key, JSON.stringify(formattedValues[key]));
-        } else {
-          formData.append(key, formattedValues[key]);
-        }
-      });
+      const createRes = await logService.createLog(payload);
+      const createdLog = createRes.data;
+      const logId = createdLog._id || createdLog.id;
 
-      if (deliveryCertificate) {
-        formData.append('deliveryCertificate', deliveryCertificate);
+      if (!logId) {
+        throw new Error('Log ID is missing in createLog response');
       }
 
+      // 🔹 שלב 2: העלאת תמונות (אם יש)
       if (workPhotos && workPhotos.length > 0) {
-        workPhotos.forEach(photo => formData.append('workPhotos', photo));
+        const photosFormData = new FormData();
+        workPhotos.forEach((photo) => {
+          // שם השדה חייב להיות "photos" לפי upload.routes.js
+          photosFormData.append('photos', photo);
+        });
+
+        await fileService.uploadPhoto(logId, photosFormData);
       }
 
-      await logService.createLog(formData);
+      // 🔹 שלב 3: העלאת תעודת משלוח כ-document (אם יש)
+      if (deliveryCertificate) {
+        const docsFormData = new FormData();
+        // שם השדה חייב להיות "documents"
+        docsFormData.append('documents', deliveryCertificate);
+        // אפשר להוסיף טיפוס כדי שיזוהה כ-delivery_note
+        docsFormData.append('type', 'delivery_note');
+
+        await fileService.uploadDocument(logId, docsFormData);
+      }
 
       toast.success('דו"ח עבודה יומי נוצר בהצלחה');
       navigate('/');
@@ -238,7 +231,6 @@ const CreateDailyLog = () => {
 
                 <Row>
                   <Col md={6}>
-                    {/* בחירת שעת התחלה — פורמט חדש */}
                     <QuarterHourSelectTimePicker
                       label="שעת התחלה"
                       value={values.startTime}
@@ -249,7 +241,6 @@ const CreateDailyLog = () => {
                     )}
                   </Col>
                   <Col md={6}>
-                    {/* בחירת שעת סיום — פורמט חדש */}
                     <QuarterHourSelectTimePicker
                       label="שעת סיום"
                       value={values.endTime}

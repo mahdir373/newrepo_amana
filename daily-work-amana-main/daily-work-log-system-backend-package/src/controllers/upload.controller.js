@@ -1,132 +1,118 @@
 const DailyLog = require('../models/dailyLog.model');
-const fs = require('fs');
 const path = require('path');
+const { Storage } = require('@google-cloud/storage');
 
-// Upload photos to a daily log
+// Initialize Google Cloud Storage
+const storage = new Storage(); // משתמש ב-Service Account של Cloud Run או GOOGLE_APPLICATION_CREDENTIALS
+
+// 🔹 ודא שהשם הזה תואם למה שיש לך ב-ENV (GCS_BUCKET_NAME או GCLOUD_BUCKET_NAME)
+const bucketName = process.env.GCS_BUCKET_NAME;
+
+if (!bucketName) {
+  console.error('❌ GCS_BUCKET_NAME is not defined in environment variables!');
+}
+
+const bucket = storage.bucket(bucketName);
+
+/**
+ * Upload buffer to Google Cloud Storage
+ */
+const uploadToGCS = (file, folder) => {
+  return new Promise((resolve, reject) => {
+    const uniqueName =
+      Date.now() + '-' + Math.round(Math.random() * 1e9) + path.extname(file.originalname);
+    const gcsPath = `${folder}/${uniqueName}`;
+
+    const blob = bucket.file(gcsPath);
+    const stream = blob.createWriteStream({
+      resumable: false,
+      metadata: { contentType: file.mimetype },
+    });
+
+    stream.on('error', (err) => reject(err));
+
+    stream.on('finish', async () => {
+      try {
+        // 🔹 הופך את האובייקט ל-public (אם ה-Bucket לא מוגדר public by default)
+        await blob.makePublic();
+
+        const publicUrl =
+          `https://storage.googleapis.com/${bucketName}/${encodeURIComponent(gcsPath)}`;
+
+        resolve({ publicUrl, storagePath: gcsPath });
+      } catch (err) {
+        console.error('Error making file public:', err);
+        reject(err);
+      }
+    });
+
+    stream.end(file.buffer);
+  });
+};
+
+/**
+ * 📷 Upload Photos
+ */
 exports.uploadPhotos = async (req, res) => {
   try {
-    // Check if files were uploaded
     if (!req.files || req.files.length === 0) {
-      return res.status(400).json({
-        message: 'No photos uploaded'
-      });
+      return res.status(400).json({ message: 'No photos uploaded' });
     }
 
-    // Find the log
     const log = await DailyLog.findById(req.params.logId);
-    
-    if (!log) {
-      // Delete uploaded files if log not found
-      req.files.forEach(file => {
-        fs.unlinkSync(file.path);
-      });
-      
-      return res.status(404).json({
-        message: 'Log not found'
-      });
-    }
+    if (!log) return res.status(404).json({ message: 'Log not found' });
 
-    // Check if user is authorized (must be the team leader or a manager)
     if (req.userRole !== 'Manager' && log.teamLeader.toString() !== req.userId) {
-      // Delete uploaded files if not authorized
-      req.files.forEach(file => {
-        fs.unlinkSync(file.path);
-      });
-      
-      return res.status(403).json({
-        message: 'You are not authorized to upload photos to this log'
-      });
+      return res.status(403).json({ message: 'Not authorized to upload photos' });
     }
 
-    // Check if log is already approved
     if (log.status === 'approved') {
-      // Delete uploaded files if log is approved
-      req.files.forEach(file => {
-        fs.unlinkSync(file.path);
-      });
-      
-      return res.status(400).json({
-        message: 'Cannot upload photos to an approved log'
+      return res.status(400).json({ message: 'Log already approved' });
+    }
+
+    const uploadedPhotos = [];
+
+    for (const file of req.files) {
+      const { publicUrl, storagePath } = await uploadToGCS(file, 'photos');
+
+      uploadedPhotos.push({
+        path: publicUrl,       // URL ל-React
+        storagePath,           // למחיקה מגוגל
+        originalName: file.originalname,
+        uploadedAt: new Date(),
       });
     }
 
-    // Add photos to log
-    const photos = req.files.map(file => ({
-      path: `/uploads/photos/${path.basename(file.path)}`,
-      originalName: file.originalname,
-      uploadedAt: new Date()
-    }));
-
-    log.photos = [...log.photos, ...photos];
+    log.photos.push(...uploadedPhotos);
     await log.save();
 
-    return res.status(200).json({
-      message: 'Photos uploaded successfully',
-      photos: photos
-    });
+    return res.status(200).json({ message: 'Photos uploaded', photos: uploadedPhotos });
   } catch (error) {
-    // Delete uploaded files if error occurs
-    if (req.files) {
-      req.files.forEach(file => {
-        fs.unlinkSync(file.path);
-      });
-    }
-    
-    return res.status(500).json({
-      message: error.message || 'Some error occurred while uploading photos'
-    });
+    console.error('Upload Photos Error:', error);
+    return res.status(500).json({ message: error.message });
   }
 };
 
-// Upload documents to a daily log
+/**
+ * 📄 Upload Documents
+ */
 exports.uploadDocuments = async (req, res) => {
   try {
-    // Check if files were uploaded
     if (!req.files || req.files.length === 0) {
-      return res.status(400).json({
-        message: 'No documents uploaded'
-      });
+      return res.status(400).json({ message: 'No documents uploaded' });
     }
 
-    // Find the log
     const log = await DailyLog.findById(req.params.logId);
-    
-    if (!log) {
-      // Delete uploaded files if log not found
-      req.files.forEach(file => {
-        fs.unlinkSync(file.path);
-      });
-      
-      return res.status(404).json({
-        message: 'Log not found'
-      });
-    }
+    if (!log) return res.status(404).json({ message: 'Log not found' });
 
-    // Check if user is authorized (must be the team leader or a manager)
     if (req.userRole !== 'Manager' && log.teamLeader.toString() !== req.userId) {
-      // Delete uploaded files if not authorized
-      req.files.forEach(file => {
-        fs.unlinkSync(file.path);
-      });
-      
-      return res.status(403).json({
-        message: 'You are not authorized to upload documents to this log'
-      });
+      return res.status(403).json({ message: 'Not authorized to upload documents' });
     }
 
-    // Check if log is already approved
     if (log.status === 'approved') {
-      // Delete uploaded files if log is approved
-      req.files.forEach(file => {
-        fs.unlinkSync(file.path);
-      });
-      
-      return res.status(400).json({
-        message: 'Cannot upload documents to an approved log'
-      });
+      return res.status(400).json({ message: 'Log already approved' });
     }
 
-    // Determine document type based on file extension
     const getDocumentType = (filename) => {
       const ext = path.extname(filename).toLowerCase();
       if (ext === '.pdf') return 'delivery_note';
@@ -135,103 +121,77 @@ exports.uploadDocuments = async (req, res) => {
       return 'other';
     };
 
-    // Add documents to log
-    const documents = req.files.map(file => ({
-      path: `/uploads/documents/${path.basename(file.path)}`,
-      originalName: file.originalname,
-      type: req.body.type || getDocumentType(file.originalname),
-      uploadedAt: new Date()
-    }));
+    const uploadedDocuments = [];
 
-    log.documents = [...log.documents, ...documents];
+    for (const file of req.files) {
+      const { publicUrl, storagePath } = await uploadToGCS(file, 'documents');
+
+      uploadedDocuments.push({
+        path: publicUrl,
+        storagePath,
+        type: req.body.type || getDocumentType(file.originalname),
+        originalName: file.originalname,
+        uploadedAt: new Date(),
+      });
+    }
+
+    log.documents.push(...uploadedDocuments);
     await log.save();
 
     return res.status(200).json({
-      message: 'Documents uploaded successfully',
-      documents: documents
+      message: 'Documents uploaded',
+      documents: uploadedDocuments,
     });
   } catch (error) {
-    // Delete uploaded files if error occurs
-    if (req.files) {
-      req.files.forEach(file => {
-        fs.unlinkSync(file.path);
-      });
-    }
-    
-    return res.status(500).json({
-      message: error.message || 'Some error occurred while uploading documents'
-    });
+    console.error('Upload Documents Error:', error);
+    return res.status(500).json({ message: error.message });
   }
 };
 
-// Delete a file (photo or document)
+/**
+ * 🗑 Delete File
+ */
 exports.deleteFile = async (req, res) => {
   try {
     const { logId, fileType, fileId } = req.params;
 
-    // Validate file type
-    if (fileType !== 'photos' && fileType !== 'documents') {
-      return res.status(400).json({
-        message: 'Invalid file type'
-      });
+    if (!['photos', 'documents'].includes(fileType)) {
+      return res.status(400).json({ message: 'Invalid file type' });
     }
 
-    // Find the log
     const log = await DailyLog.findById(logId);
-    
-    if (!log) {
-      return res.status(404).json({
-        message: 'Log not found'
-      });
-    }
+    if (!log) return res.status(404).json({ message: 'Log not found' });
 
-    // Check if user is authorized (must be the team leader or a manager)
     if (req.userRole !== 'Manager' && log.teamLeader.toString() !== req.userId) {
-      return res.status(403).json({
-        message: `You are not authorized to delete ${fileType} from this log`
-      });
+      return res.status(403).json({ message: 'Unauthorized' });
     }
 
-    // Check if log is already approved
     if (log.status === 'approved') {
-      return res.status(400).json({
-        message: `Cannot delete ${fileType} from an approved log`
-      });
+      return res.status(400).json({ message: 'Cannot delete from approved log' });
     }
 
-    // Find the file
     const files = fileType === 'photos' ? log.photos : log.documents;
-    const fileIndex = files.findIndex(file => file._id.toString() === fileId);
-    
-    if (fileIndex === -1) {
-      return res.status(404).json({
-        message: 'File not found'
-      });
+    const index = files.findIndex((f) => f._id.toString() === fileId);
+
+    if (index === -1) return res.status(404).json({ message: 'File not found' });
+
+    const storagePath = files[index].storagePath;
+
+    // מוחקים מה-Bucket (אם יש storagePath)
+    if (storagePath) {
+      try {
+        await bucket.file(storagePath).delete({ ignoreNotFound: true });
+      } catch (err) {
+        console.warn('GCS delete error:', err.message);
+      }
     }
 
-    // Get file path
-    const filePath = path.join(__dirname, '..', files[fileIndex].path);
-
-    // Delete file from disk if it exists
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-
-    // Remove file from log
-    if (fileType === 'photos') {
-      log.photos.splice(fileIndex, 1);
-    } else {
-      log.documents.splice(fileIndex, 1);
-    }
-
+    files.splice(index, 1);
     await log.save();
 
-    return res.status(200).json({
-      message: 'File deleted successfully'
-    });
+    return res.status(200).json({ message: 'File deleted' });
   } catch (error) {
-    return res.status(500).json({
-      message: error.message || 'Some error occurred while deleting the file'
-    });
+    console.error('Delete File Error:', error);
+    return res.status(500).json({ message: error.message });
   }
 };
