@@ -105,6 +105,11 @@ exports.uploadDocuments = async (req, res) => {
     const log = await DailyLog.findById(req.params.logId);
     if (!log) return res.status(404).json({ message: 'Log not found' });
 
+    // ✅ DEBUG (ממש פה)
+    console.log('documents schema instance:', DailyLog.schema.path('documents')?.instance);
+    console.log('documents schema isArray:', DailyLog.schema.path('documents')?.$isMongooseArray);
+    console.log('current log.documents type:', typeof log.documents, 'isArray:', Array.isArray(log.documents));
+
     if (req.userRole !== 'Manager' && log.teamLeader.toString() !== req.userId) {
       return res.status(403).json({ message: 'Not authorized to upload documents' });
     }
@@ -135,7 +140,6 @@ exports.uploadDocuments = async (req, res) => {
       });
     }
 
-    // 🔹 לוודא שמוגדר מערך לפני push – פה הייתה הבעיה
     if (!Array.isArray(log.documents)) {
       log.documents = [];
     }
@@ -152,7 +156,6 @@ exports.uploadDocuments = async (req, res) => {
     return res.status(500).json({ message: error.message });
   }
 };
-
 
 /**
  * 🗑 Delete File
