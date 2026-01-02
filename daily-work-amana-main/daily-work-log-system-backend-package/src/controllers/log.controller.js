@@ -91,8 +91,7 @@ exports.getLogById = async (req, res) => {
   try {
     const log = await DailyLog.findById(req.params.id)
       .populate('teamLeader', 'fullName')
-      .populate('project', 'name')
-      .populate('employees', 'fullName');
+      .populate('project', 'name');
 
     if (!log) return res.status(404).json({ message: 'Log not found' });
 
@@ -186,6 +185,10 @@ exports.updateLog = async (req, res) => {
     }
 
     const updateData = req.body;
+    // ❌ אסור לעדכן קבצים דרך updateLog
+    delete updateData.documents;
+    delete updateData.photos;
+
     Object.keys(updateData).forEach(key => {
       if (updateData[key] === undefined) delete updateData[key];
     });
