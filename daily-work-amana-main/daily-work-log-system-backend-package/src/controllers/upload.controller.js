@@ -1,141 +1,79 @@
 const DailyLog = require('../models/dailyLog.model');
 const bucket = require('../config/gcs');
 
-/**
- * Upload photos to a daily log (Google Cloud Storage)
- */
-
-
+/* =================================================
+   Upload files (photos + delivery certificate)
+   Endpoint: POST /api/uploads/:logId/files
+================================================= */
 exports.uploadFiles = async (req, res) => {
   try {
-    // פשוט להפנות ללוגיקה קיימת
-    if (req.uploadedFiles?.workPhotos) {
-      return exports.uploadPhotos(req, res);
+    const { logId } = req.params;
+
+    if (!req.uploadedFiles || Object.keys(req.uploadedFiles).length === 0) {
+      return res.status(400).json({ message: 'No files uploaded' });
     }
 
-    if (req.uploadedFiles?.deliveryCertificate) {
-      return exports.uploadDocuments(req, res);
-    }
-
-    return res.status(400).json({ message: 'No files uploaded' });
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
-  }
-};
-
-
-
-exports.uploadPhotos = async (req, res) => {
-  try {
-    if (
-      !req.uploadedFiles ||
-      !req.uploadedFiles.workPhotos ||
-      req.uploadedFiles.workPhotos.length === 0
-    ) {
-      return res.status(400).json({ message: 'No photos uploaded' });
-    }
-
-    const log = await DailyLog.findById(req.params.logId);
+    const log = await DailyLog.findById(logId);
     if (!log) {
       return res.status(404).json({ message: 'Log not found' });
     }
 
-    // Authorization
+    // 🔐 Authorization
     if (req.userRole !== 'Manager' && log.teamLeader.toString() !== req.userId) {
       return res.status(403).json({
-        message: 'You are not authorized to upload photos to this log'
+        message: 'You are not authorized to upload files to this log',
       });
     }
 
-    // Approved check
+    // 🚫 Approved check
     if (log.status === 'approved') {
       return res.status(400).json({
-        message: 'Cannot upload photos to an approved log'
+        message: 'Cannot upload files to an approved log',
       });
     }
 
-    // Save photo URLs
-    const photos = req.uploadedFiles.workPhotos.map(url => ({
-      url,
-      uploadedAt: new Date()
-    }));
+    /* -------- Photos -------- */
+    if (req.uploadedFiles.workPhotos?.length) {
+      const photos = req.uploadedFiles.workPhotos.map((url) => ({
+        url,
+        uploadedAt: new Date(),
+      }));
 
-    log.photos = [...log.photos, ...photos];
-    await log.save();
-
-    return res.status(200).json({
-      message: 'Photos uploaded successfully',
-      photos
-    });
-  } catch (error) {
-    return res.status(500).json({
-      message: error.message || 'Some error occurred while uploading photos'
-    });
-  }
-};
-
-/**
- * Upload documents to a daily log (Google Cloud Storage)
- */
-exports.uploadDocuments = async (req, res) => {
-  try {
-    if (
-      !req.uploadedFiles ||
-      !req.uploadedFiles.deliveryCertificate ||
-      req.uploadedFiles.deliveryCertificate.length === 0
-    ) {
-      return res.status(400).json({ message: 'No documents uploaded' });
+      log.photos = [...(log.photos || []), ...photos];
     }
 
-    const log = await DailyLog.findById(req.params.logId);
-    if (!log) {
-      return res.status(404).json({ message: 'Log not found' });
+    /* -------- Delivery Certificate -------- */
+    if (req.uploadedFiles.deliveryCertificate?.length) {
+      log.deliveryCertificate = {
+        url: req.uploadedFiles.deliveryCertificate[0],
+        type: req.body.type || 'delivery_note',
+        uploadedAt: new Date(),
+      };
     }
-
-    // Authorization
-    if (req.userRole !== 'Manager' && log.teamLeader.toString() !== req.userId) {
-      return res.status(403).json({
-        message: 'You are not authorized to upload documents to this log'
-      });
-    }
-
-    // Approved check
-    if (log.status === 'approved') {
-      return res.status(400).json({
-        message: 'Cannot upload documents to an approved log'
-      });
-    }
-
-    // Only one delivery certificate expected
-    const documentUrl = req.uploadedFiles.deliveryCertificate[0];
-
-    log.deliveryCertificate = {
-      url: documentUrl,
-      type: req.body.type || 'other',
-      uploadedAt: new Date()
-    };
 
     await log.save();
 
     return res.status(200).json({
-      message: 'Documents uploaded successfully',
-      document: log.deliveryCertificate
+      message: 'Files uploaded successfully',
+      uploadedFiles: req.uploadedFiles,
     });
   } catch (error) {
+    console.error('❌ Upload files error:', error);
     return res.status(500).json({
-      message: error.message || 'Some error occurred while uploading documents'
+      message: error.message || 'Error uploading files',
     });
   }
 };
 
-/**
- * Delete a photo or document (from GCS + DB)
- */
+/* =================================================
+   Delete file (photo or delivery certificate)
+   Endpoint: DELETE /api/uploads/:logId/:fileType/:fileId
+================================================= */
 exports.deleteFile = async (req, res) => {
   try {
     const { logId, fileType, fileId } = req.params;
 
-    if (fileType !== 'photos' && fileType !== 'documents') {
+    if (!['workPhotos', 'deliveryCertificate'].includes(fileType)) {
       return res.status(400).json({ message: 'Invalid file type' });
     }
 
@@ -144,55 +82,63 @@ exports.deleteFile = async (req, res) => {
       return res.status(404).json({ message: 'Log not found' });
     }
 
-    // Authorization
+    // 🔐 Authorization
     if (req.userRole !== 'Manager' && log.teamLeader.toString() !== req.userId) {
       return res.status(403).json({
-        message: `You are not authorized to delete ${fileType} from this log`
+        message: 'You are not authorized to delete files from this log',
       });
     }
 
-    // Approved check
+    // 🚫 Approved check
     if (log.status === 'approved') {
       return res.status(400).json({
-        message: `Cannot delete ${fileType} from an approved log`
+        message: 'Cannot delete files from an approved log',
       });
     }
 
     let fileUrl;
 
-    if (fileType === 'photos') {
+    /* -------- Delete photo -------- */
+    if (fileType === 'workPhotos') {
       const index = log.photos.findIndex(
-        f => f._id.toString() === fileId
+        (p) => p._id.toString() === fileId
       );
+
       if (index === -1) {
         return res.status(404).json({ message: 'Photo not found' });
       }
 
       fileUrl = log.photos[index].url;
       log.photos.splice(index, 1);
-    } else {
+    }
+
+    /* -------- Delete delivery certificate -------- */
+    if (fileType === 'deliveryCertificate') {
       if (!log.deliveryCertificate) {
-        return res.status(404).json({ message: 'Document not found' });
+        return res.status(404).json({ message: 'Delivery certificate not found' });
       }
 
       fileUrl = log.deliveryCertificate.url;
       log.deliveryCertificate = null;
     }
 
-    // Delete from Google Cloud Storage
-    const gcsPath = decodeURIComponent(
-      fileUrl.split(`https://storage.googleapis.com/${bucket.name}/`)[1]
-    );
-    await bucket.file(gcsPath).delete();
+    /* -------- Delete from GCS -------- */
+    if (fileUrl) {
+      const gcsPath = decodeURIComponent(
+        fileUrl.split(`https://storage.googleapis.com/${bucket.name}/`)[1]
+      );
+      await bucket.file(gcsPath).delete().catch(() => {});
+    }
 
     await log.save();
 
     return res.status(200).json({
-      message: 'File deleted successfully'
+      message: 'File deleted successfully',
     });
   } catch (error) {
+    console.error('❌ Delete file error:', error);
     return res.status(500).json({
-      message: error.message || 'Some error occurred while deleting the file'
+      message: error.message || 'Error deleting file',
     });
   }
 };

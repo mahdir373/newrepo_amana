@@ -1,31 +1,45 @@
 const express = require('express');
 const uploadController = require('../controllers/upload.controller');
-const { verifyToken, isManagerOrTeamLeader } = require('../middleware/auth.middleware');
+const {
+  verifyToken,
+  isManagerOrTeamLeader,
+} = require('../middleware/auth.middleware');
 const {
   uploadMiddleware,
-  uploadToGCS
+  uploadToGCS,
 } = require('../middleware/upload.middleware');
 
 const router = express.Router();
 
-// All routes require authentication
+/* ------------------------------------
+   🔐 Authentication
+------------------------------------ */
 router.use(verifyToken);
 
-/**
- * Upload photos + documents to a daily log
- * Fields:
- * - workPhotos (up to 10 images)
- * - deliveryCertificate (1 document)
- */
+/* ------------------------------------
+   📤 Upload files to a daily log
+   Endpoint: POST /api/uploads/:logId/files
+
+   Supported fields (multipart/form-data):
+   - workPhotos (up to 10 images)
+   - deliveryCertificate (1 document)
+------------------------------------ */
 router.post(
   '/:logId/files',
   isManagerOrTeamLeader,
-  uploadMiddleware,   // multer.memoryStorage
-  uploadToGCS,        // upload to Google Cloud Storage
+  uploadMiddleware, // multer.memoryStorage + validation
+  uploadToGCS,      // upload files to Google Cloud Storage
   uploadController.uploadFiles
 );
 
-// Delete a file (photo or document)
+/* ------------------------------------
+   🗑️ Delete file from a daily log
+   Endpoint: DELETE /api/uploads/:logId/:fileType/:fileId
+
+   fileType:
+   - workPhotos
+   - deliveryCertificate
+------------------------------------ */
 router.delete(
   '/:logId/:fileType/:fileId',
   isManagerOrTeamLeader,

@@ -1,131 +1,116 @@
 const multer = require('multer');
-const path = require('path');
+const { v4: uuidv4 } = require('uuid');
 const bucket = require('../config/gcs');
 
 /* =========================
    Multer – Memory Storage
    ========================= */
-const upload = multer({
+const uploadMiddleware = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB
-  }
-});
+    fileSize: 10 * 1024 * 1024, // 10MB
+  },
+  fileFilter: (req, file, cb) => {
+    // 📸 תמונות
+    if (file.fieldname === 'workPhotos') {
+      if (file.mimetype.startsWith('image/')) {
+        return cb(null, true);
+      }
+      return cb(new Error('Only image files are allowed for workPhotos'));
+    }
 
-/* =========================
-   File Filters
-   ========================= */
-const photoFilter = (req, file, cb) => {
-  if (file.mimetype.startsWith('image/')) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only image files are allowed'), false);
-  }
-};
+    // 📄 מסמכים
+    if (file.fieldname === 'deliveryCertificate') {
+      const allowedMimeTypes = [
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'image/jpeg',
+        'image/png',
+        'image/gif',
+      ];
 
-const documentFilter = (req, file, cb) => {
-  const allowedMimeTypes = [
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.ms-excel',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'image/jpeg',
-    'image/png',
-    'image/gif'
-  ];
+      if (allowedMimeTypes.includes(file.mimetype)) {
+        return cb(null, true);
+      }
+      return cb(new Error('Invalid document type for deliveryCertificate'));
+    }
 
-  if (allowedMimeTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error('Invalid document type'), false);
-  }
-};
+    cb(new Error('Unknown upload field'));
+  },
+}).fields([
+  { name: 'deliveryCertificate', maxCount: 1 },
+  { name: 'workPhotos', maxCount: 10 },
+]);
 
 /* =========================
    Upload to Google Cloud Storage
    ========================= */
 const uploadToGCS = async (req, res, next) => {
-  if (!req.files) return next();
-
   try {
-    const uploaded = {};
+    if (!req.files || Object.keys(req.files).length === 0) {
+      req.uploadedFiles = {};
+      return next();
+    }
 
-    for (const fieldName of Object.keys(req.files)) {
-      uploaded[fieldName] = [];
+    req.uploadedFiles = {};
 
-      for (const file of req.files[fieldName]) {
-        // Decide folder by field
-        let folder = 'others';
-        if (fieldName === 'workPhotos') folder = 'photos';
-        if (fieldName === 'deliveryCertificate') folder = 'documents';
-
-        const fileName = `${folder}/${Date.now()}-${file.originalname}`;
+    const uploadSingleFile = (file, folder) =>
+      new Promise((resolve, reject) => {
+        const fileName = `${folder}/${uuidv4()}-${file.originalname}`;
         const blob = bucket.file(fileName);
 
         const stream = blob.createWriteStream({
           resumable: false,
           contentType: file.mimetype,
+          metadata: {
+            cacheControl: 'public, max-age=31536000',
+          },
+        });
+
+        stream.on('error', reject);
+
+        stream.on('finish', async () => {
+          try {
+            await blob.makePublic();
+            resolve(
+              `https://storage.googleapis.com/${bucket.name}/${fileName}`
+            );
+          } catch (err) {
+            reject(err);
+          }
         });
 
         stream.end(file.buffer);
+      });
 
-        await new Promise((resolve, reject) => {
-          stream.on('finish', resolve);
-          stream.on('error', reject);
-        });
-
-        uploaded[fieldName].push(
-          `https://storage.googleapis.com/${bucket.name}/${fileName}`
-        );
+    // 📄 deliveryCertificate
+    if (req.files.deliveryCertificate?.length) {
+      req.uploadedFiles.deliveryCertificate = [];
+      for (const file of req.files.deliveryCertificate) {
+        const url = await uploadSingleFile(file, 'delivery-certificates');
+        req.uploadedFiles.deliveryCertificate.push(url);
       }
     }
 
-    req.uploadedFiles = uploaded;
+    // 📸 workPhotos
+    if (req.files.workPhotos?.length) {
+      req.uploadedFiles.workPhotos = [];
+      for (const file of req.files.workPhotos) {
+        const url = await uploadSingleFile(file, 'work-photos');
+        req.uploadedFiles.workPhotos.push(url);
+      }
+    }
+
     next();
   } catch (err) {
     next(err);
   }
 };
 
-/* =========================
-   Fields Configuration
-   ========================= */
-const uploadFields = [
-  {
-    name: 'deliveryCertificate',
-    maxCount: 1,
-    filter: documentFilter
-  },
-  {
-    name: 'workPhotos',
-    maxCount: 10,
-    filter: photoFilter
-  }
-];
-
-/* =========================
-   Middleware Wrapper
-   ========================= */
-const uploadMiddleware = (req, res, next) => {
-  upload.fields(
-    uploadFields.map(f => ({ name: f.name, maxCount: f.maxCount }))
-  )(req, res, err => {
-    if (err) return next(err);
-
-    // Apply filters manually
-    for (const field of uploadFields) {
-      const files = req.files?.[field.name] || [];
-      for (const file of files) {
-        field.filter(req, file, () => {});
-      }
-    }
-
-    next();
-  });
-};
-
 module.exports = {
   uploadMiddleware,
-  uploadToGCS
+  uploadToGCS,
 };

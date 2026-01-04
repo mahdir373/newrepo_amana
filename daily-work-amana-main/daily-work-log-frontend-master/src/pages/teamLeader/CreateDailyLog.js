@@ -3,54 +3,53 @@ import { Container, Row, Col, Form, Button, Card, Alert } from 'react-bootstrap'
 import { useNavigate } from 'react-router-dom';
 import { Formik } from 'formik';
 import * as Yup from 'yup';
-import { logService } from '../../services/apiService';
-import { fileService } from '../../services/apiService'; // ⬅️ חדש
+import { logService, fileService } from '../../services/apiService';
 import { toast } from 'react-toastify';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
-/** ---------- פורמט חדש: Select אחד ל-HH:MM ברבעי שעה ---------- */
+/* ----------------------------------
+   Quarter-hour time picker
+---------------------------------- */
 const QuarterHourSelectTimePicker = ({ label, value, onChange }) => {
   const h = value ? value.getHours() : 0;
   const m = value ? value.getMinutes() : 0;
 
-  const hhmmOptions = [];
+  const options = [];
   for (let hour = 0; hour < 24; hour++) {
     [0, 15, 30, 45].forEach((min) => {
-      hhmmOptions.push({ label: `${pad2(hour)}:${pad2(min)}`, hour, min });
+      options.push(`${pad2(hour)}:${pad2(min)}`);
     });
   }
 
-  const handleHHMMChange = (e) => {
+  const handleChange = (e) => {
     const [HH, MM] = e.target.value.split(':').map(Number);
     const next = value ? new Date(value) : new Date();
     next.setHours(HH, MM, 0, 0);
     onChange(next);
   };
 
-  const currentHHMM = `${pad2(h)}:${pad2(m - (m % 15))}`;
+  const current = `${pad2(h)}:${pad2(m - (m % 15))}`;
 
   return (
     <Form.Group className="mb-3">
       <Form.Label>{label}</Form.Label>
-      <Row className="g-2">
-        <Col xs={8}>
-          <Form.Select value={currentHHMM} onChange={handleHHMMChange}>
-            {hhmmOptions.map(({ label, hour, min }) => (
-              <option key={`${hour}-${min}`} value={`${pad2(hour)}:${pad2(min)}`}>
-                {label}
-              </option>
-            ))}
-          </Form.Select>
-        </Col>
-        <Col xs={4}>{/* שמרתי מקום אם תרצה להחזיר שניות בעתיד */}</Col>
-      </Row>
+      <Form.Select value={current} onChange={handleChange}>
+        {options.map((t) => (
+          <option key={t} value={t}>
+            {t}
+          </option>
+        ))}
+      </Form.Select>
     </Form.Group>
   );
 };
 
+/* ==================================
+   Main Component
+================================== */
 const CreateDailyLog = () => {
   const navigate = useNavigate();
   const [error, setError] = useState('');
@@ -62,13 +61,15 @@ const CreateDailyLog = () => {
     startTime: Yup.date().required('יש להזין שעת התחלה'),
     endTime: Yup.date()
       .required('יש להזין שעת סיום')
-      .test('is-after-start', 'שעת הסיום חייבת להיות לאחר שעת ההתחלה', function (value) {
-        const { startTime } = this.parent;
-        return !startTime || !value || value > startTime;
-      }),
+      .test(
+        'is-after-start',
+        'שעת הסיום חייבת להיות לאחר שעת ההתחלה',
+        function (value) {
+          const { startTime } = this.parent;
+          return !startTime || !value || value > startTime;
+        }
+      ),
     workDescription: Yup.string().required('יש להזין תיאור עבודה'),
-    deliveryCertificate: Yup.mixed().nullable(),
-    workPhotos: Yup.mixed().nullable()
   });
 
   const initialValues = {
@@ -79,91 +80,68 @@ const CreateDailyLog = () => {
     endTime: new Date(new Date().setHours(17, 0, 0, 0)),
     workDescription: '',
     deliveryCertificate: null,
-    workPhotos: []
+    workPhotos: [],
   };
 
   const handleSubmit = async (values, { setSubmitting }) => {
-  try {
-    setError('');
+    try {
+      setError('');
 
-    // נוציא את השדות שקשורים לקבצים + employees בנפרד
-    const { deliveryCertificate, workPhotos, employees, ...restValues } = values;
+      const { deliveryCertificate, workPhotos, employees, ...rest } = values;
 
-    // ננקה עובדים ריקים (שדות טקסט ריקים בסוף הרשימה)
-    const cleanedEmployees = (employees || []).filter(
-      (e) => e && e.trim() !== ''
-    );
+      const cleanedEmployees = employees.filter(
+        (e) => e && e.trim() !== ''
+      );
 
-    // 🔹 שלב 1: יצירת הדוח בלי קבצים (JSON רגיל)
-    const payload = {
-      ...restValues,
-      // כאן השינוי הכי חשוב: employees כמחרוזת JSON
-      employees: JSON.stringify(cleanedEmployees),
-      date: new Date(values.date).toISOString(),
-      startTime: new Date(values.startTime).toISOString(),
-      endTime: new Date(values.endTime).toISOString()
-    };
+      /* -------- Step 1: create log (JSON only) -------- */
+      const payload = {
+        ...rest,
+        employees: JSON.stringify(cleanedEmployees),
+        date: values.date.toISOString(),
+        startTime: values.startTime.toISOString(),
+        endTime: values.endTime.toISOString(),
+      };
 
-    const createRes = await logService.createLog(payload);
-    const createdLog = createRes.data;
-    const logId = createdLog._id || createdLog.id;
+      const res = await logService.createLog(payload);
+      const logId = res.data?._id;
 
-    if (!logId) {
-      throw new Error('Log ID is missing in createLog response');
+      if (!logId) {
+        throw new Error('Log ID missing from response');
+      }
+
+      /* -------- Step 2: upload files (GCS) -------- */
+      if (deliveryCertificate || workPhotos.length > 0) {
+        const formData = new FormData();
+
+        if (deliveryCertificate) {
+          formData.append('deliveryCertificate', deliveryCertificate);
+        }
+
+        workPhotos.forEach((photo) => {
+          formData.append('workPhotos', photo);
+        });
+
+        await fileService.uploadFiles(logId, formData);
+      }
+
+      toast.success('דו"ח עבודה יומי נוצר בהצלחה');
+      navigate('/');
+    } catch (err) {
+      console.error('❌ Create log error:', err);
+
+      const message =
+        err.response?.data?.message || 'נכשל ביצירת דו"ח';
+
+      setError(message);
+      toast.error(message);
+    } finally {
+      setSubmitting(false);
     }
-
-    // 🔹 שלב 2: העלאת תמונות (אם יש)
-    if (workPhotos && workPhotos.length > 0) {
-      const photosFormData = new FormData();
-      workPhotos.forEach((photo) => {
-        // שם השדה חייב להיות "photos" לפי upload.routes.js
-        photosFormData.append('photos', photo);
-      });
-
-      await fileService.uploadPhoto(logId, photosFormData);
-    }
-
-    // 🔹 שלב 3: העלאת תעודת משלוח כ-document (אם יש)
-    if (deliveryCertificate) {
-      const docsFormData = new FormData();
-      // שם השדה חייב להיות "documents"
-      docsFormData.append('documents', deliveryCertificate);
-      // אפשר להוסיף טיפוס כדי שיזוהה כ-delivery_note
-      docsFormData.append('type', 'delivery_note');
-
-      await fileService.uploadDocument(logId, docsFormData);
-    }
-
-    toast.success('דו"ח עבודה יומי נוצר בהצלחה');
-    navigate('/');
-  } catch (err) {
-    console.error('שגיאה ביצירת דו"ח:', {
-      status: err.response?.status,
-      data: err.response?.data,
-      fullError: err,
-    });
-
-    const errors = err.response?.data?.errors;
-    let serverMessage =
-      err.response?.data?.message ||
-      (Array.isArray(errors) && errors.length > 0 ? errors[0]?.msg : null);
-
-    setError(serverMessage || 'נכשל ביצירת דו"ח. אנא נסה שוב.');
-    toast.error(serverMessage || 'נכשל ביצירת דו"ח');
-  } finally {
-    setSubmitting(false);
-  }
-};
-
+  };
 
   return (
     <Container dir="rtl">
-      <Row className="mb-4">
-        <Col>
-          <h2>יצירת דו"ח עבודה יומי</h2>
-          <p className="text-muted">נא למלא את פרטי העבודה שבוצעה היום</p>
-        </Col>
-      </Row>
+      <h2 className="mb-3">יצירת דו"ח עבודה יומי</h2>
 
       {error && <Alert variant="danger">{error}</Alert>}
 
@@ -179,59 +157,51 @@ const CreateDailyLog = () => {
               errors,
               touched,
               handleChange,
-              handleBlur,
               handleSubmit,
               setFieldValue,
-              isSubmitting
+              isSubmitting,
             }) => (
               <Form onSubmit={handleSubmit}>
                 <Row>
                   <Col md={6}>
-                    <Form.Group className="mb-3">
-                      <Form.Label>תאריך</Form.Label>
-                      <DatePicker
-                        selected={values.date}
-                        onChange={(date) => setFieldValue('date', date)}
-                        className={`form-control ${touched.date && errors.date ? 'is-invalid' : ''}`}
-                        dateFormat="dd/MM/yyyy"
-                      />
-                    </Form.Group>
+                    <Form.Label>תאריך</Form.Label>
+                    <DatePicker
+                      selected={values.date}
+                      onChange={(d) => setFieldValue('date', d)}
+                      className="form-control"
+                      dateFormat="dd/MM/yyyy"
+                    />
                   </Col>
+
                   <Col md={6}>
-                    <Form.Group className="mb-3">
-                      <Form.Label>שם פרויקט</Form.Label>
-                      <Form.Control
-                        type="text"
-                        name="project"
-                        value={values.project}
-                        onChange={handleChange}
-                        onBlur={handleBlur}
-                        isInvalid={touched.project && !!errors.project}
-                      />
-                    </Form.Group>
+                    <Form.Label>שם פרויקט</Form.Label>
+                    <Form.Control
+                      name="project"
+                      value={values.project}
+                      onChange={handleChange}
+                      isInvalid={touched.project && errors.project}
+                    />
                   </Col>
                 </Row>
 
-                <Form.Group className="mb-3">
+                <Form.Group className="mt-3">
                   <Form.Label>עובדים נוכחים</Form.Label>
-                  {values.employees.map((employee, index) => (
-                    <Row key={index} className="mb-2">
+                  {values.employees.map((emp, i) => (
+                    <Row key={i} className="mb-2">
                       <Col xs={10}>
                         <Form.Control
-                          type="text"
-                          name={`employees[${index}]`}
-                          value={employee}
+                          name={`employees[${i}]`}
+                          value={emp}
                           onChange={handleChange}
-                          placeholder="שם העובד"
                         />
                       </Col>
                       <Col xs={2}>
                         <Button
                           variant="outline-danger"
                           onClick={() => {
-                            const updated = [...values.employees];
-                            updated.splice(index, 1);
-                            setFieldValue('employees', updated);
+                            const next = [...values.employees];
+                            next.splice(i, 1);
+                            setFieldValue('employees', next);
                           }}
                         >
                           ✕
@@ -241,22 +211,21 @@ const CreateDailyLog = () => {
                   ))}
                   <Button
                     variant="outline-primary"
-                    onClick={() => setFieldValue('employees', [...values.employees, ''])}
+                    onClick={() =>
+                      setFieldValue('employees', [...values.employees, ''])
+                    }
                   >
                     הוסף עובד
                   </Button>
                 </Form.Group>
 
-                <Row>
+                <Row className="mt-3">
                   <Col md={6}>
                     <QuarterHourSelectTimePicker
                       label="שעת התחלה"
                       value={values.startTime}
                       onChange={(d) => setFieldValue('startTime', d)}
                     />
-                    {touched.startTime && errors.startTime && (
-                      <div className="invalid-feedback d-block">{errors.startTime}</div>
-                    )}
                   </Col>
                   <Col md={6}>
                     <QuarterHourSelectTimePicker
@@ -264,13 +233,10 @@ const CreateDailyLog = () => {
                       value={values.endTime}
                       onChange={(d) => setFieldValue('endTime', d)}
                     />
-                    {touched.endTime && errors.endTime && (
-                      <div className="invalid-feedback d-block">{errors.endTime}</div>
-                    )}
                   </Col>
                 </Row>
 
-                <Form.Group className="mb-3">
+                <Form.Group className="mt-3">
                   <Form.Label>תיאור העבודה</Form.Label>
                   <Form.Control
                     as="textarea"
@@ -278,48 +244,45 @@ const CreateDailyLog = () => {
                     name="workDescription"
                     value={values.workDescription}
                     onChange={handleChange}
-                    onBlur={handleBlur}
-                    isInvalid={touched.workDescription && !!errors.workDescription}
                   />
                 </Form.Group>
 
-                <Form.Group className="mb-4">
+                <Form.Group className="mt-3">
                   <Form.Label>תעודת משלוח</Form.Label>
                   <Form.Control
                     type="file"
                     accept="image/*,.pdf"
-                    onChange={(e) => setFieldValue('deliveryCertificate', e.currentTarget.files[0])}
+                    onChange={(e) =>
+                      setFieldValue(
+                        'deliveryCertificate',
+                        e.currentTarget.files[0]
+                      )
+                    }
                   />
                 </Form.Group>
 
-                <Form.Group className="mb-4">
-                  <Form.Label>צרף תמונות</Form.Label>
+                <Form.Group className="mt-3">
+                  <Form.Label>תמונות עבודה</Form.Label>
                   <Form.Control
                     type="file"
-                    name="workPhotos"
-                    accept="image/*"
                     multiple
-                    onChange={(e) => {
-                      const files = Array.from(e.currentTarget.files);
-                      setFieldValue('workPhotos', files);
-                    }}
+                    accept="image/*"
+                    onChange={(e) =>
+                      setFieldValue(
+                        'workPhotos',
+                        Array.from(e.currentTarget.files)
+                      )
+                    }
                   />
-                  {values.workPhotos.length > 0 && (
-                    <ul className="mt-2">
-                      {values.workPhotos.map((file, i) => (
-                        <li key={i}>{file.name}</li>
-                      ))}
-                    </ul>
-                  )}
                 </Form.Group>
 
-                <div className="d-flex justify-content-between">
-                  <Button variant="secondary" onClick={() => navigate('/')}>ביטול</Button>
-                  <div>
-                    <Button variant="success" type="submit" disabled={isSubmitting}>
-                      {isSubmitting ? 'שולח...' : 'שמור ושלח'}
-                    </Button>
-                  </div>
+                <div className="mt-4 d-flex justify-content-between">
+                  <Button variant="secondary" onClick={() => navigate('/')}>
+                    ביטול
+                  </Button>
+                  <Button type="submit" disabled={isSubmitting}>
+                    {isSubmitting ? 'שולח...' : 'שמור'}
+                  </Button>
                 </div>
               </Form>
             )}
