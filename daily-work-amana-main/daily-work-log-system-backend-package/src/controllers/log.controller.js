@@ -1,3 +1,118 @@
+const DailyLog = require('../models/dailyLog.model');
+const { validationResult } = require('express-validator');
+const notificationController = require('./notification.controller');
+const PDFDocument = require('pdfkit');
+const moment = require('moment');
+const mongoose = require('mongoose');
+const User = require('../models/user.model'); // ✅ חשוב לייבא את מודל המשתמשים
+
+// Get all logs (with filtering)
+exports.getAllLogs = async (req, res) => {
+  try {
+    const { startDate, endDate, project, status, teamLeader, searchTerm } = req.query;
+    const filter = {};
+
+    // 📅 סינון לפי טווח תאריכים
+    if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      filter.date = { $gte: start, $lte: end };
+    } else if (startDate) {
+      filter.date = { $gte: new Date(startDate) };
+    } else if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      filter.date = { $lte: end };
+    }
+
+    // 🏗️ פרויקט
+    if (project) filter.project = project;
+
+    // 🟢 סטטוס
+    if (status) filter.status = status;
+
+    // 👨‍🔧 ראש צוות
+    if (teamLeader) filter.teamLeader = teamLeader;
+
+    // 🔍 חיפוש בטקסט
+    if (searchTerm) {
+      filter.workDescription = { $regex: searchTerm, $options: 'i' };
+    }
+
+    // אם המשתמש הוא ראש צוות – החזר רק את הדוחות שלו
+    if (req.userRole === 'Team Leader') {
+      filter.teamLeader = req.userId;
+    }
+
+    const logs = await DailyLog.find(filter)
+      .sort({ date: -1 })
+      .populate('teamLeader', 'fullName')
+      .populate('project', 'name');
+
+    return res.status(200).json(logs);
+  } catch (error) {
+    console.error('❌ Error while fetching logs:', error);
+    return res.status(500).json({ message: error.message || 'Error retrieving logs' });
+  }
+};
+
+// Get logs for current team leader (limit to 5 latest)
+exports.getMyLogs = async (req, res) => {
+  try {
+    const logs = await DailyLog.find({
+      teamLeader: new mongoose.Types.ObjectId(req.userId)
+    })
+      .sort({ date: -1 })
+      .limit(5)
+      .populate('project', 'name');
+
+    console.log('📌 req.userId:', req.userId);
+    return res.status(200).json(logs);
+  } catch (error) {
+    console.error('❌ Error while fetching my logs:', error);
+    return res.status(500).json({ message: error.message || 'Error retrieving logs' });
+  }
+};
+
+// Get team leaders
+exports.getTeamLeaders = async (req, res) => {
+  try {
+    const teamLeaders = await User.find({ role: 'Team Leader' }).select('_id fullName');
+    res.status(200).json(teamLeaders);
+  } catch (error) {
+    console.error('❌ שגיאה בטעינת ראשי צוות:', error);
+    res.status(500).json({ message: 'שגיאה בטעינת ראשי צוות' });
+  }
+};
+
+// Get log by ID
+exports.getLogById = async (req, res) => {
+  try {
+    const log = await DailyLog.findById(req.params.id)
+      .populate('teamLeader', 'fullName')
+      .populate('project', 'name')
+      .populate('employees', 'fullName');
+
+    if (!log) return res.status(404).json({ message: 'Log not found' });
+
+    const teamLeaderId =
+      typeof log.teamLeader === 'object' && log.teamLeader._id
+        ? log.teamLeader._id.toString()
+        : log.teamLeader?.toString();
+
+    if (req.userRole !== 'Manager' && teamLeaderId !== req.userId) {
+      return res.status(403).json({ message: 'Not authorized to view this log' });
+    }
+
+    return res.status(200).json(log);
+  } catch (error) {
+    console.error('❌ Error while fetching log by ID:', error);
+    return res.status(500).json({ message: error.message || 'Error retrieving the log' });
+  }
+};
+
+// Create a new log
 exports.createLog = async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -5,75 +120,204 @@ exports.createLog = async (req, res) => {
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const {
-      date,
-      project,
-      employees,
-      startTime,
-      endTime,
-      workDescription,
-      status,
-      photos,
-      documents,
-    } = req.body;
-
-    // ✅ employees יכול להגיע כמחרוזת JSON או כמערך כבר
-    const parsedEmployees =
-      typeof employees === 'string' ? JSON.parse(employees) : (employees || []);
-
-    // ✅ photos/documents יכולים להגיע כמחרוזת JSON או כמערך כבר
-    const parsedPhotos =
-      typeof photos === 'string' ? JSON.parse(photos) : (photos || []);
-
-    const parsedDocuments =
-      typeof documents === 'string' ? JSON.parse(documents) : (documents || []);
+    const { date, project, employees, startTime, endTime, workDescription, status } = req.body;
 
     const existingLog = await DailyLog.findOne({
       date: new Date(date),
       teamLeader: req.userId,
-      project: project.trim(),
+      project: project.trim()
     });
 
     if (existingLog) {
       await notificationController.createDuplicateWarningNotification(req.userId, date, project);
       return res.status(400).json({
         message: 'A log already exists for this date and project',
-        existingLogId: existingLog._id,
+        existingLogId: existingLog._id
       });
     }
 
-    // (אופציונלי) תמיכה אחורה בלוקאלי אם עדיין מעלים דרך multer
-    const deliveryCertificate = req.files?.deliveryCertificate?.[0]
-      ? 'uploads/' + req.files.deliveryCertificate[0].path.replace(/\\/g, '/').split('uploads/')[1]
-      : null;
+    const deliveryCertificate =
+      req.uploadedFiles?.deliveryCertificate?.[0] || null;
 
-    const workPhotos = req.files?.workPhotos?.map(file => {
-      const relative = file.path.replace(/\\/g, '/').split('uploads/')[1];
-      return `uploads/${relative}`;
-    }) || [];
+    const workPhotos =
+      req.uploadedFiles?.workPhotos || [];
+
 
     const newLog = new DailyLog({
       date: new Date(date),
       project: project.trim(),
-      employees: parsedEmployees,
+      employees: employees ? JSON.parse(employees) : [],
       startTime: new Date(startTime),
       endTime: new Date(endTime),
       workDescription: workDescription.trim(),
-      deliveryCertificate,
-      workPhotos,
-
-      // ✅ חדש – GCS
-      photos: Array.isArray(parsedPhotos) ? parsedPhotos : [],
-      documents: Array.isArray(parsedDocuments) ? parsedDocuments : [],
-
+      deliveryCertificate,   // ✅ URL של GCS
+      workPhotos,            // ✅ מערך URLs של GCS
       teamLeader: req.userId,
-      status: status || 'draft',
+      status: status || 'draft'
     });
+
 
     const savedLog = await newLog.save();
     return res.status(201).json(savedLog);
   } catch (error) {
     console.error('❌ Error while creating log:', error);
     return res.status(500).json({ message: error.message || 'Error creating the log' });
+  }
+};
+
+// Update a log
+exports.updateLog = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const log = await DailyLog.findById(req.params.id);
+    if (!log) return res.status(404).json({ message: 'Log not found' });
+
+    if (log.teamLeader.toString() !== req.userId) {
+      return res.status(403).json({ message: 'Not authorized to update this log' });
+    }
+
+    if (log.status === 'approved') {
+      return res.status(400).json({ message: 'Cannot update an approved log' });
+    }
+
+    const updateData = req.body;
+    Object.keys(updateData).forEach(key => {
+      if (updateData[key] === undefined) delete updateData[key];
+    });
+
+    if (req.uploadedFiles?.deliveryCertificate?.[0]) {
+      updateData.deliveryCertificate =
+        req.uploadedFiles.deliveryCertificate[0];
+    }
+
+    if (req.uploadedFiles?.workPhotos?.length) {
+      updateData.workPhotos = req.uploadedFiles.workPhotos;
+    }
+
+    const updatedLog = await DailyLog.findByIdAndUpdate(req.params.id, updateData, {
+      new: true,
+      runValidators: true
+    });
+    return res.status(200).json(updatedLog);
+  } catch (error) {
+    console.error('❌ Error while updating log:', error);
+    return res.status(500).json({ message: error.message || 'Error updating the log' });
+  }
+};
+
+// Submit a log
+exports.submitLog = async (req, res) => {
+  try {
+    const log = await DailyLog.findById(req.params.id);
+    if (!log) return res.status(404).json({ message: 'Log not found' });
+
+    if (log.teamLeader.toString() !== req.userId) {
+      return res.status(403).json({ message: 'Not authorized to submit this log' });
+    }
+
+    if (log.status !== 'draft') {
+      return res.status(400).json({ message: `Log is already ${log.status}` });
+    }
+
+    log.status = 'submitted';
+    await log.save();
+
+    return res.status(200).json({ message: 'Log submitted successfully', id: log._id, status: log.status });
+  } catch (error) {
+    console.error('❌ Error while submitting log:', error);
+    return res.status(500).json({ message: error.message || 'Error submitting the log' });
+  }
+};
+
+// Approve a log
+exports.approveLog = async (req, res) => {
+  try {
+    const log = await DailyLog.findById(req.params.id);
+    if (!log) return res.status(404).json({ message: 'Log not found' });
+
+    if (log.status !== 'submitted') {
+      return res.status(400).json({ message: 'Only submitted logs can be approved' });
+    }
+
+    log.status = 'approved';
+    log.approvedBy = req.userId;
+    log.approvedAt = new Date();
+    await log.save();
+
+    await notificationController.createLogApprovedNotification(log._id);
+    return res.status(200).json({ message: 'Log approved successfully', id: log._id, status: log.status });
+  } catch (error) {
+    console.error('❌ Error while approving log:', error);
+    return res.status(500).json({ message: error.message || 'Error approving the log' });
+  }
+};
+
+// Delete a log
+exports.deleteLog = async (req, res) => {
+  try {
+    const log = await DailyLog.findById(req.params.id);
+    if (!log) return res.status(404).json({ message: 'Log not found' });
+
+    if (req.userRole !== 'Manager' && log.teamLeader.toString() !== req.userId) {
+      return res.status(403).json({ message: 'Not authorized to delete this log' });
+    }
+
+    if (log.status === 'approved' && req.userRole !== 'Manager') {
+      return res.status(400).json({ message: 'Cannot delete an approved log' });
+    }
+
+    await DailyLog.findByIdAndDelete(req.params.id);
+    return res.status(200).json({ message: 'Log deleted successfully' });
+  } catch (error) {
+    console.error('❌ Error while deleting log:', error);
+    return res.status(500).json({ message: error.message || 'Error deleting the log' });
+  }
+};
+
+// Export log to PDF
+exports.exportLogToPdf = async (req, res) => {
+  try {
+    const log = await DailyLog.findById(req.params.id).populate('teamLeader', 'fullName');
+
+    if (!log) return res.status(404).json({ message: 'Log not found' });
+
+    if (req.userRole !== 'Manager' && log.teamLeader._id.toString() !== req.userId) {
+      return res.status(403).json({ message: 'Not authorized to export this log' });
+    }
+
+    const doc = new PDFDocument({ margin: 50 });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=daily-log-${log._id}.pdf`);
+    doc.pipe(res);
+
+    doc.fontSize(20).text('Daily Work Log', { align: 'center' });
+    doc.moveDown();
+
+    doc.fontSize(12).text(`Date: ${moment(log.date).format('DD/MM/YYYY')}`);
+    doc.text(`Project: ${log.project}`);
+    doc.text(`Team Leader: ${log.teamLeader?.fullName || '—'}`);
+    doc.text(`Work Hours: ${moment(log.startTime).format('HH:mm')} - ${moment(log.endTime).format('HH:mm')}`);
+    doc.text(`Status: ${log.status}`);
+    
+    doc.moveDown();
+    doc.fontSize(14).text('Employees Present:');
+    doc.fontSize(12);
+    if (log.employees.length === 0) {
+      doc.text('No employees recorded.');
+    } else {
+      log.employees.forEach(emp => doc.text(`- ${emp}`));
+    }
+
+    doc.moveDown();
+    doc.fontSize(14).text('Work Description:');
+    doc.fontSize(12).text(log.workDescription);
+    doc.end();
+  } catch (error) {
+    console.error('❌ Error while exporting log to PDF:', error);
+    return res.status(500).json({ message: error.message || 'Error exporting the log' });
   }
 };

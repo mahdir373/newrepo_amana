@@ -7,7 +7,11 @@ const {
   isTeamLeader,
   isManagerOrTeamLeader
 } = require('../middleware/auth.middleware');
-const { uploadFields } = require('../middleware/upload.middleware');
+
+const {
+  uploadMiddleware,
+  uploadToGCS
+} = require('../middleware/upload.middleware');
 
 const router = express.Router();
 
@@ -17,9 +21,9 @@ router.use(verifyToken);
 /* -----------------------------------------------
    📥 שליפות
 ------------------------------------------------ */
+
 // 🔎 שליפת רשימת כל ראשי הצוות (לסינון)
 router.get('/team-leaders', isManagerOrTeamLeader, logController.getTeamLeaders);
-
 
 // 🔎 שליפת כל הדוחות עם פילטרים
 router.get('/', isManagerOrTeamLeader, logController.getAllLogs);
@@ -27,12 +31,8 @@ router.get('/', isManagerOrTeamLeader, logController.getAllLogs);
 // 🔎 שליפת דוחות לפי ראש צוות מחובר
 router.get('/my-logs', isTeamLeader, logController.getMyLogs);
 
-// 🔎 שליפת רשימת כל ראשי הצוות (לסינון)
-router.get('/team-leaders', isManagerOrTeamLeader, logController.getTeamLeaders);
-
 // 🔎 שליפת דוח לפי מזהה
 router.get('/:id', logController.getLogById);
-
 
 /* -----------------------------------------------
    ✍️ יצירה ועדכון
@@ -41,8 +41,9 @@ router.get('/:id', logController.getLogById);
 // ✏️ יצירת דוח חדש
 router.post(
   '/',
-  uploadFields,
   isTeamLeader,
+  uploadMiddleware,   // multer.memoryStorage
+  uploadToGCS,        // העלאה ל-Google Cloud Storage
   [
     body('date').isISO8601().withMessage('נדרש תאריך חוקי'),
     body('project').isString().notEmpty().withMessage('יש להזין פרויקט'),
@@ -57,8 +58,9 @@ router.post(
 // ✏️ עדכון דוח
 router.put(
   '/:id',
-  uploadFields,
   isTeamLeader,
+  uploadMiddleware,
+  uploadToGCS,
   [
     body('date').optional().isISO8601().withMessage('תאריך חוקי נדרש'),
     body('project').optional().isString().withMessage('פרויקט חייב להיות מחרוזת'),
@@ -69,7 +71,6 @@ router.put(
   ],
   logController.updateLog
 );
-
 
 /* -----------------------------------------------
    📤 פעולות על דוח קיים
@@ -86,6 +87,5 @@ router.delete('/:id', isManagerOrTeamLeader, logController.deleteLog);
 
 // 📄 ייצוא PDF
 router.get('/:id/export-pdf', isManagerOrTeamLeader, logController.exportLogToPdf);
-
 
 module.exports = router;

@@ -1,21 +1,29 @@
 const multer = require('multer');
+const path = require('path');
+const bucket = require('../config/gcs');
 
-// ⚙️ Storage בזיכרון – לא שומרים לדיסק בכלל
-const memoryStorage = multer.memoryStorage();
+/* =========================
+   Multer – Memory Storage
+   ========================= */
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB
+  }
+});
 
-// File filter for photos
+/* =========================
+   File Filters
+   ========================= */
 const photoFilter = (req, file, cb) => {
-  // Accept only image files
   if (file.mimetype.startsWith('image/')) {
     cb(null, true);
   } else {
-    cb(new Error('Only image files are allowed!'), false);
+    cb(new Error('Only image files are allowed'), false);
   }
 };
 
-// File filter for documents
 const documentFilter = (req, file, cb) => {
-  // Accept only PDF, DOC, DOCX, XLS, XLSX, and image files
   const allowedMimeTypes = [
     'application/pdf',
     'application/msword',
@@ -26,57 +34,98 @@ const documentFilter = (req, file, cb) => {
     'image/png',
     'image/gif'
   ];
-  
+
   if (allowedMimeTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error('Only PDF, DOC, DOCX, XLS, XLSX, and image files are allowed!'), false);
+    cb(new Error('Invalid document type'), false);
   }
 };
 
-// 📸 multer להגדרת העלאת תמונות (לוג יומי)
-const uploadPhotos = multer({
-  storage: memoryStorage,      // ⬅️ במקום diskStorage
-  fileFilter: photoFilter,
-  limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB limit
-  }
-});
+/* =========================
+   Upload to Google Cloud Storage
+   ========================= */
+const uploadToGCS = async (req, res, next) => {
+  if (!req.files) return next();
 
-// 📄 multer להגדרת העלאת מסמכים (לוג יומי)
-const uploadDocuments = multer({
-  storage: memoryStorage,      // ⬅️ במקום diskStorage
-  fileFilter: documentFilter,
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  }
-});
+  try {
+    const uploaded = {};
 
-// 🧩 העלאה משולבת (deliveryCertificate + workPhotos) – למשל ל־CreateDailyLog אחר
-const combinedUpload = multer({
-  storage: memoryStorage,      // ⬅️ גם כאן רק בזיכרון
-  fileFilter: (req, file, cb) => {
-    if (file.fieldname === 'workPhotos') {
-      return photoFilter(req, file, cb);
-    } else if (file.fieldname === 'deliveryCertificate') {
-      return documentFilter(req, file, cb);
+    for (const fieldName of Object.keys(req.files)) {
+      uploaded[fieldName] = [];
+
+      for (const file of req.files[fieldName]) {
+        // Decide folder by field
+        let folder = 'others';
+        if (fieldName === 'workPhotos') folder = 'photos';
+        if (fieldName === 'deliveryCertificate') folder = 'documents';
+
+        const fileName = `${folder}/${Date.now()}-${file.originalname}`;
+        const blob = bucket.file(fileName);
+
+        const stream = blob.createWriteStream({
+          resumable: false,
+          contentType: file.mimetype,
+        });
+
+        stream.end(file.buffer);
+
+        await new Promise((resolve, reject) => {
+          stream.on('finish', resolve);
+          stream.on('error', reject);
+        });
+
+        uploaded[fieldName].push(
+          `https://storage.googleapis.com/${bucket.name}/${fileName}`
+        );
+      }
     }
-    cb(new Error('Unknown field'), false);
-  },
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB max per file
+
+    req.uploadedFiles = uploaded;
+    next();
+  } catch (err) {
+    next(err);
   }
-});
+};
 
-// 📌 שדות מרובים בטופס אחד
-const uploadFields = combinedUpload.fields([
-  { name: 'deliveryCertificate', maxCount: 1 },
-  { name: 'workPhotos', maxCount: 10 }  // או כמה שאתה רוצה
-]);
+/* =========================
+   Fields Configuration
+   ========================= */
+const uploadFields = [
+  {
+    name: 'deliveryCertificate',
+    maxCount: 1,
+    filter: documentFilter
+  },
+  {
+    name: 'workPhotos',
+    maxCount: 10,
+    filter: photoFilter
+  }
+];
 
-// ✅ ייצוא יחיד ומסודר
+/* =========================
+   Middleware Wrapper
+   ========================= */
+const uploadMiddleware = (req, res, next) => {
+  upload.fields(
+    uploadFields.map(f => ({ name: f.name, maxCount: f.maxCount }))
+  )(req, res, err => {
+    if (err) return next(err);
+
+    // Apply filters manually
+    for (const field of uploadFields) {
+      const files = req.files?.[field.name] || [];
+      for (const file of files) {
+        field.filter(req, file, () => {});
+      }
+    }
+
+    next();
+  });
+};
+
 module.exports = {
-  uploadPhotos,
-  uploadDocuments,
-  uploadFields
+  uploadMiddleware,
+  uploadToGCS
 };
