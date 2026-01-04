@@ -7,23 +7,17 @@ const morgan = require('morgan');
 const path = require('path');
 const { initScheduledTasks } = require('./utils/scheduler');
 
-// 🔥 controller של auth (אם צריך אותו ישירות)
-const authController = require('./controllers/auth.controller');
-
-// Import routes
+// Routes
 const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
 const projectRoutes = require('./routes/project.routes');
-// const employeeRoutes = require('./routes/employee.routes');
 const logRoutes = require('./routes/log.routes');
 const uploadRoutes = require('./routes/upload.routes');
 const notificationRoutes = require('./routes/notification.routes');
 
-// Create Express app
 const app = express();
 
 // ------------------ MIDDLEWARE ------------------
-
 app.use(
   helmet({
     crossOriginEmbedderPolicy: false,
@@ -36,7 +30,14 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
-// Static files (uploads)
+// ------------------ HEALTH CHECK (חשוב ל-Cloud Run) ------------------
+app.get('/healthz', (req, res) => {
+  res.status(200).send('ok');
+});
+
+// ------------------ STATIC FILES (OLD LOCAL UPLOADS) ------------------
+// ⚠️ אם אתה בענן ועברת ל-GCS, זה לא חובה, אבל זה לא מזיק.
+// רק שים לב: לא להשתמש באותו prefix של API uploads.
 app.use(
   '/uploads',
   express.static(path.join(__dirname, 'uploads'), {
@@ -52,42 +53,23 @@ app.use(
 );
 
 // ------------------ API ROUTES ------------------
-
-// ✅ תומך גם ב-/api/auth וגם ב-/auth
-// כלומר כל אלה יעבדו:
-// POST /api/auth/login
-// POST /auth/login
 app.use(['/api/auth', '/auth'], authRoutes);
-
-// ✅ אותו טריק לשאר הראוטים – גם עם /api וגם בלי
-
-// Users
 app.use(['/api/users', '/users'], userRoutes);
-
-// Projects
 app.use(['/api/projects', '/projects'], projectRoutes);
-
-// Logs
 app.use(['/api/logs', '/logs'], logRoutes);
 
-// Uploads API – שים לב שלא משתמשים ב-/uploads כי זה כבר סטטי לקבצים
+// ✅ uploads API לא משתמש ב-/uploads כדי לא להתנגש עם הסטטי
 app.use(['/api/uploads', '/uploads-api'], uploadRoutes);
 
-// Notifications
 app.use(['/api/notifications', '/notifications'], notificationRoutes);
 
-// אם יש Employees בעתיד:
-// app.use(['/api/employees', '/employees'], employeeRoutes);
-
-// ------------------ ROOT ROUTE ------------------
-
+// ------------------ ROOT ------------------
 app.get('/', (req, res) => {
   res.json({ message: 'Welcome to Daily Work Log System API' });
 });
 
-// ------------------ 404 HANDLER ------------------
-
-app.use((req, res, next) => {
+// ------------------ 404 ------------------
+app.use((req, res) => {
   console.warn(`❌ Route not found: [${req.method}] ${req.originalUrl}`);
   res.status(404).json({
     message: 'Route not found',
@@ -96,44 +78,43 @@ app.use((req, res, next) => {
   });
 });
 
-// ------------------ ERROR HANDLER 500 ------------------
-
+// ------------------ ERROR HANDLER ------------------
 app.use((err, req, res, next) => {
-  console.error('🔥 Server error:', err.stack);
+  console.error('🔥 Server error:', err.stack || err);
   res.status(500).json({
     message: err.message || 'Something went wrong on the server',
     error: process.env.NODE_ENV === 'development' ? err : {},
   });
 });
 
-// ------------------ DB & SERVER ------------------
+// ------------------ SERVER FIRST (Cloud Run Fix) ------------------
+const PORT = Number(process.env.PORT) || 8080;
+console.log('✅ BOOT:', __filename);
+console.log('✅ ENV PORT:', process.env.PORT, '-> using', PORT);
 
-const PORT = process.env.PORT || 5001;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server is listening on port ${PORT}`);
+});
+
+// ------------------ DB CONNECT (NON-BLOCKING) ------------------
 const MONGODB_URI = process.env.MONGODB_URI;
 
 if (!MONGODB_URI) {
   console.error('❌ MONGODB_URI is not defined in environment variables');
-  process.exit(1);
-}
+} else {
+  mongoose
+    .connect(MONGODB_URI)
+    .then(() => {
+      console.log('✅ Connected to MongoDB');
 
-mongoose
-  .connect(MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
-  .then(() => {
-    console.log('✅ Connected to MongoDB');
-
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`🚀 Server is running on port ${PORT}`);
+      // Scheduler אחרי DB
+      initScheduledTasks();
+      console.log('⏰ Scheduled tasks initialized');
+    })
+    .catch((err) => {
+      console.error('❌ Failed to connect to MongoDB:', err.message || err);
+      // ❌ לא עושים process.exit ב-Cloud Run
     });
-
-    initScheduledTasks();
-    console.log('⏰ Scheduled tasks initialized');
-  })
-  .catch((err) => {
-    console.error('❌ Failed to connect to MongoDB', err);
-    process.exit(1);
-  });
+}
 
 module.exports = app;
