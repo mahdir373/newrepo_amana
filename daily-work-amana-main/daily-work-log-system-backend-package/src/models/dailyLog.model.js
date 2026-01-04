@@ -60,22 +60,25 @@ const DailyLogSchema = new mongoose.Schema(
       default: [],
     },
 
-    // ⭐ חדש – מסמכים שנשמרים ב-Google Cloud Storage
-    documents: {
-      type: [
-        {
-          path: String,        // URL מלא/יחסי
-          storagePath: String, // הנתיב בתוך ה-bucket
-          type: String,        // delivery_note / receipt / invoice / other
-          originalName: String,
-          uploadedAt: {
-            type: Date,
-            default: Date.now,
-          },
-        },
-      ],
-      default: [],
+// ⭐ חדש – מסמכים שנשמרים ב-Google Cloud Storage
+documents: {
+  type: [
+    {
+      path: { type: String, required: true }, // URL לצפייה/הורדה
+      storagePath: { type: String },          // הנתיב בתוך ה-bucket (למחיקה)
+      originalName: { type: String },
+      mimeType: { type: String },
+      size: { type: Number },
+      uploadedAt: {
+        type: Date,
+        default: Date.now,
+      },
     },
+  ],
+  default: [],
+},
+
+
 
     status: {
       type: String,

@@ -105,11 +105,6 @@ exports.uploadDocuments = async (req, res) => {
     const log = await DailyLog.findById(req.params.logId);
     if (!log) return res.status(404).json({ message: 'Log not found' });
 
-    // ✅ DEBUG (ממש פה)
-    console.log('documents schema instance:', DailyLog.schema.path('documents')?.instance);
-    console.log('documents schema isArray:', DailyLog.schema.path('documents')?.$isMongooseArray);
-    console.log('current log.documents type:', typeof log.documents, 'isArray:', Array.isArray(log.documents));
-
     if (req.userRole !== 'Manager' && log.teamLeader.toString() !== req.userId) {
       return res.status(403).json({ message: 'Not authorized to upload documents' });
     }
@@ -117,14 +112,6 @@ exports.uploadDocuments = async (req, res) => {
     if (log.status === 'approved') {
       return res.status(400).json({ message: 'Log already approved' });
     }
-
-    const getDocumentType = (filename) => {
-      const ext = path.extname(filename).toLowerCase();
-      if (ext === '.pdf') return 'delivery_note';
-      if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) return 'receipt';
-      if (['.doc', '.docx', '.xls', '.xlsx'].includes(ext)) return 'invoice';
-      return 'other';
-    };
 
     const uploadedDocuments = [];
 
@@ -134,8 +121,9 @@ exports.uploadDocuments = async (req, res) => {
       uploadedDocuments.push({
         path: publicUrl,
         storagePath,
-        type: req.body.type || getDocumentType(file.originalname),
         originalName: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size,          // אם multer memoryStorage מספק size (בד"כ כן)
         uploadedAt: new Date(),
       });
     }
@@ -156,6 +144,7 @@ exports.uploadDocuments = async (req, res) => {
     return res.status(500).json({ message: error.message });
   }
 };
+
 
 /**
  * 🗑 Delete File
@@ -180,7 +169,11 @@ exports.deleteFile = async (req, res) => {
     }
 
     const files = fileType === 'photos' ? log.photos : log.documents;
-    const index = files.findIndex((f) => f._id.toString() === fileId);
+    const index = files.findIndex((f) => {
+  if (typeof f === 'string') return f === fileId;          // אופציה למחיקה לפי URL
+  return f?._id?.toString() === fileId;
+});
+
 
     if (index === -1) return res.status(404).json({ message: 'File not found' });
 

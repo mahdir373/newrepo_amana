@@ -92,7 +92,8 @@ const ViewDailyLog = () => {
 
   // 🔎 מוצאים תעודת משלוח מתוך documents (GCS) אם קיימת
   const deliveryNoteFromDocuments =
-    log.documents?.find((doc) => doc.type === 'delivery_note') || null;
+  Array.isArray(log.documents) && log.documents.length > 0 ? log.documents[0] : null;
+
 
   return (
     <Container dir="rtl">
@@ -250,9 +251,9 @@ const ViewDailyLog = () => {
             <Row>
               <Col xs={6} sm={4} md={3} lg={2} className="mb-3">
                 {(() => {
-                  const filePath =
-                    deliveryNoteFromDocuments?.path || log.deliveryCertificate;
+                  const filePath = deliveryNoteFromDocuments || log.deliveryCertificate;
                   const url = resolveFileUrl(filePath);
+
 
                   return (
                     <a href={url} target="_blank" rel="noopener noreferrer">
